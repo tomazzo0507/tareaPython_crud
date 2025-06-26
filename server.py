@@ -5,6 +5,7 @@ import urllib.parse
 import psycopg2
 import pandas as pd
 import os
+import json
 
 # Configuración del servidor
 PORT = 8000
@@ -39,8 +40,8 @@ def init_db():
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     """
-    Manejador personalizado para las peticiones HTTP.
-    Gestiona tanto las peticiones GET (mostrar página) como POST (operaciones CRUD).
+    Manejador personalizado para las peticiones HTTP REST.
+    Gestiona GET (leer), POST (crear), PUT (actualizar) y DELETE (eliminar).
     """
     
     def do_GET(self):
@@ -48,10 +49,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         Maneja las peticiones GET:
         - Sirve archivos estáticos (CSS) desde /static/
         - Muestra la página principal con la tabla de productos y formulario
+        - API endpoint: GET /api/productos para obtener JSON de productos
         """
         # Si la petición es para archivos estáticos (CSS), usar el handler por defecto
         if self.path.startswith('/static/'):
             return http.server.SimpleHTTPRequestHandler.do_GET(self)
+        
+        # API endpoint para obtener productos en JSON
+        if self.path == '/api/productos':
+            self.get_productos_api()
+            return
         
         # Extraer el ID del producto a editar desde los parámetros de la URL
         edit_id = None
@@ -134,44 +141,143 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_POST(self):
         """
-        Maneja las peticiones POST para las operaciones CRUD:
-        - add: Agregar nuevo producto
-        - edit: Editar producto existente
-        - delete: Eliminar producto
+        Maneja las peticiones POST para CREAR nuevos productos (REST CREATE).
+        - Formulario HTML: action=add
+        - API endpoint: POST /api/productos con JSON
         """
         # Leer los datos enviados por el formulario
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
+        
+        # API endpoint para crear producto con JSON
+        if self.path == '/api/productos':
+            self.create_producto_api(post_data)
+            return
+        
+        # Formulario HTML tradicional
         data = urllib.parse.parse_qs(post_data.decode('utf-8'))
         action = data.get('action', [''])[0]
         
-        # Conectar a PostgreSQL para realizar la operación
-        conn = psycopg2.connect(**DB_CONFIG)
-        c = conn.cursor()
-        
-        # Ejecutar la operación correspondiente según el action
         if action == 'add':
-            # Insertar nuevo producto en la base de datos
+            # Conectar a PostgreSQL para crear el producto
+            conn = psycopg2.connect(**DB_CONFIG)
+            c = conn.cursor()
             c.execute('INSERT INTO productos (nombre, precio, stock) VALUES (%s, %s, %s)', (
                 data['nombre'][0], float(data['precio'][0]), int(data['stock'][0])
             ))
-        elif action == 'edit':
-            # Actualizar producto existente
-            c.execute('UPDATE productos SET nombre=%s, precio=%s, stock=%s WHERE id=%s', (
-                data['nombre'][0], float(data['precio'][0]), int(data['stock'][0]), int(data['id'][0])
-            ))
-        elif action == 'delete':
-            # Eliminar producto por ID
-            c.execute('DELETE FROM productos WHERE id=%s', (int(data['id'][0]),))
-        
-        # Confirmar los cambios en la base de datos
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
         
         # Redirigir de vuelta a la página principal para mostrar los cambios
         self.send_response(303)
         self.send_header('Location', '/')
         self.end_headers()
+
+    def do_PUT(self):
+        """
+        Maneja las peticiones PUT para ACTUALIZAR productos existentes (REST UPDATE).
+        - API endpoint: PUT /api/productos/{id} con JSON
+        """
+        if self.path.startswith('/api/productos/'):
+            # Extraer el ID del producto de la URL
+            producto_id = self.path.split('/')[-1]
+            content_length = int(self.headers['Content-Length'])
+            put_data = self.rfile.read(content_length)
+            self.update_producto_api(producto_id, put_data)
+        else:
+            self.send_error(404, 'Endpoint no encontrado')
+
+    def do_DELETE(self):
+        """
+        Maneja las peticiones DELETE para ELIMINAR productos (REST DELETE).
+        - API endpoint: DELETE /api/productos/{id}
+        """
+        if self.path.startswith('/api/productos/'):
+            # Extraer el ID del producto de la URL
+            producto_id = self.path.split('/')[-1]
+            self.delete_producto_api(producto_id)
+        else:
+            self.send_error(404, 'Endpoint no encontrado')
+
+    def get_productos_api(self):
+        """API endpoint para obtener todos los productos en formato JSON"""
+        try:
+            conn = psycopg2.connect(**DB_CONFIG)
+            df = pd.read_sql_query('SELECT * FROM productos', conn)
+            conn.close()
+            
+            # Convertir DataFrame a lista de diccionarios
+            productos = df.to_dict('records')
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(productos, default=str).encode('utf-8'))
+        except Exception as e:
+            self.send_error(500, f'Error interno: {str(e)}')
+
+    def create_producto_api(self, post_data):
+        """API endpoint para crear un nuevo producto con JSON"""
+        try:
+            data = json.loads(post_data.decode('utf-8'))
+            conn = psycopg2.connect(**DB_CONFIG)
+            c = conn.cursor()
+            c.execute('INSERT INTO productos (nombre, precio, stock) VALUES (%s, %s, %s) RETURNING id', (
+                data['nombre'], float(data['precio']), int(data['stock'])
+            ))
+            nuevo_id = c.fetchone()[0]
+            conn.commit()
+            conn.close()
+            
+            self.send_response(201)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'id': nuevo_id, 'mensaje': 'Producto creado exitosamente'}).encode('utf-8'))
+        except Exception as e:
+            self.send_error(400, f'Error en los datos: {str(e)}')
+
+    def update_producto_api(self, producto_id, put_data):
+        """API endpoint para actualizar un producto existente con JSON"""
+        try:
+            data = json.loads(put_data.decode('utf-8'))
+            conn = psycopg2.connect(**DB_CONFIG)
+            c = conn.cursor()
+            c.execute('UPDATE productos SET nombre=%s, precio=%s, stock=%s WHERE id=%s', (
+                data['nombre'], float(data['precio']), int(data['stock']), int(producto_id)
+            ))
+            if c.rowcount == 0:
+                conn.close()
+                self.send_error(404, 'Producto no encontrado')
+                return
+            conn.commit()
+            conn.close()
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'mensaje': 'Producto actualizado exitosamente'}).encode('utf-8'))
+        except Exception as e:
+            self.send_error(400, f'Error en los datos: {str(e)}')
+
+    def delete_producto_api(self, producto_id):
+        """API endpoint para eliminar un producto"""
+        try:
+            conn = psycopg2.connect(**DB_CONFIG)
+            c = conn.cursor()
+            c.execute('DELETE FROM productos WHERE id=%s', (int(producto_id),))
+            if c.rowcount == 0:
+                conn.close()
+                self.send_error(404, 'Producto no encontrado')
+                return
+            conn.commit()
+            conn.close()
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'mensaje': 'Producto eliminado exitosamente'}).encode('utf-8'))
+        except Exception as e:
+            self.send_error(500, f'Error interno: {str(e)}')
 
 # Punto de entrada principal del programa
 if __name__ == '__main__':
@@ -185,5 +291,10 @@ if __name__ == '__main__':
     # Iniciar el servidor HTTP en el puerto especificado
     with socketserver.TCPServer(('', PORT), Handler) as httpd:
         print(f'Servidor corriendo en http://localhost:{PORT}')
+        print('Endpoints API REST disponibles:')
+        print('  GET    /api/productos     - Obtener todos los productos')
+        print('  POST   /api/productos     - Crear nuevo producto')
+        print('  PUT    /api/productos/{id} - Actualizar producto')
+        print('  DELETE /api/productos/{id} - Eliminar producto')
         print('Presiona Ctrl+C para detener el servidor')
         httpd.serve_forever() 
