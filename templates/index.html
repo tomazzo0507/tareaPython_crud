@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>CRUD Productos - Tienda</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Gestión de Productos</h1>
+        <div class="crud-panel">
+            <div class="form-panel">
+                {{formulario}}
+            </div>
+            <div class="table-panel">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Nombre</th>
+                            <th>Precio</th>
+                            <th>Stock</th>
+                            <th>Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{tabla_productos}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html> 
